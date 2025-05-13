@@ -3,14 +3,17 @@ require 'webrick'
 require 'driq'
 require 'driq/webrick'
 require 'drb'
+require 'monitor'
 
 module MidiM
   class DJ2GO2Dev
     NAME = 'Numark DJ2GO2 Touch'
+    
     def initialize
       @input = UniMIDI::Input.find_by_name(NAME)
+      @output = UniMIDI::Output.find_by_name(NAME)
     end
-    attr_reader :input
+    attr_reader :input, :output
 
     def reader
       Thread.new do
@@ -21,8 +24,9 @@ module MidiM
       end
     end
 
-    def prepare(data)
+    def prepare(data) # FIXME
       return data if data.size == 1 && data.first[:data].size == 3
+      return nil
       it = data.inject([]) do |nu, x|
         if (3..12) === x[:data].size && x[:data].size % 3 == 0
           x[:data].each_slice(3) {|chunk|
@@ -93,10 +97,61 @@ module MidiM
 EOS
     end
   end
+
+  class DoubleBuffer
+    include MonitorMixin
+    def initialize(&proc)
+      super()
+      @proc = proc
+      @ary = []
+    end
+    attr_reader :proc
+
+    def push(obj)
+      synchronize do
+        @ary << obj
+        @ary.size
+      end
+    end
+
+    def push_and_call(obj)
+      if push(obj) == 1
+        @proc.call
+      end
+    end
+
+    def pop
+      synchronize do
+        return @ary
+      ensure
+        @ary = []
+      end
+    end
+  end
 end
 
 if __FILE__ == $0
-  # dev = MidiM::DJ2GO2Dev.new
-  # (dev.reader {|x| pp x}).join
-  MidiM::DJ2GO2WebUI.new.start
+  dev = MidiM::DJ2GO2Dev.new
+  # dev.output.puts([0x80, 0x33, 127])
+  # MidiM::DJ2GO2WebUI.new.start
+  DRb.start_service
+  txtb = DRbObject.new_with_uri('druby://localhost:8085?controller')
+  w = MidiM::DoubleBuffer.new do
+    txtb.execute_keyboard_macro(w)
+  end
+  dev.reader {|e|
+    case e[0][:data]
+    when [176, 6, 1]
+      w.push_and_call(:up)
+      p :up
+    when [176, 6, 127]
+      w.push_and_call(:down)
+      p :down
+    when [177, 6, 1]
+      p :up
+    when [177, 6, 127]
+      p :down
+    end
+  }
+  gets
 end
