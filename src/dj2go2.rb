@@ -120,20 +120,6 @@ EOS
   end
 end
 
-class Queue
-  def pop_all(nonblock=true)
-    result = []
-    begin
-      while true
-        result << pop(nonblock)
-        nonblock = true
-      end
-    rescue ThreadError
-    end
-    result
-  end
-end
-
 if __FILE__ == $0
   dev = MidiM::DJ2GO2Dev.new
   if false
