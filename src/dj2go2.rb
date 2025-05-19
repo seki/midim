@@ -4,10 +4,12 @@ require 'driq'
 require 'driq/webrick'
 require 'drb'
 require 'monitor'
+require_relative 'midim'
 
 module MidiM
   class DJ2GO2Dev
     NAME = 'Numark DJ2GO2 Touch'
+    QUERY_MESSAGE = [240, 0, 32, 127, 0, 247]
     
     def initialize
       @input = UniMIDI::Input.find_by_name(NAME)
@@ -15,28 +17,12 @@ module MidiM
     end
     attr_reader :input, :output
 
-    def reader
-      Thread.new do
-        while data = @input.gets
-          data = prepare(data)
-          yield(data) if data
-        end
-      end
+    def query_message
+      @output.puts(QUERY_MESSAGE)
     end
 
-    def prepare(data) # FIXME
-      return data if data.size == 1 && data.first[:data].size == 3
-      return nil
-      it = data.inject([]) do |nu, x|
-        if (3..12) === x[:data].size && x[:data].size % 3 == 0
-          x[:data].each_slice(3) {|chunk|
-            nu << {data: chunk, timestamp: x[:timestamp], edited: 1}
-          }
-        end
-        nu
-      end
-      pp [data, it]
-      it
+    def reader(&blk)
+      Treatment.reader(@input, &blk)
     end
   end
 
@@ -57,7 +43,12 @@ module MidiM
       }
 
       @dev = MidiM::DJ2GO2Dev.new
-      @dev.reader {|x| @src.write(x)}
+      @dev.query_message
+      Thread.new do
+        @dev.reader do |it|
+          @src.write(it)
+        end
+      end
     end
 
     def start
@@ -87,10 +78,9 @@ module MidiM
     let text = document.getElementById('last-data');
     let json = JSON.parse(e.data)
     text.innerHTML = "message: " + e.data;
-    json.forEach(data => {
-      let place = document.getElementById(data.data.slice(0,2).toString())
-      if (place) { place.textContent = data.data[2]}
-    });
+    
+    let place = document.getElementById(json.data.slice(0,2).toString());
+    if (place) { place.textContent = json.data[2]};
   };
   </script>
 </html>
@@ -98,60 +88,61 @@ EOS
     end
   end
 
-  class DoubleBuffer
-    include MonitorMixin
-    def initialize(&proc)
-      super()
-      @proc = proc
-      @ary = []
+  class DJ2GO2Server
+    def initialize
+      @chan = [nil, nil]
     end
-    attr_reader :proc
-
-    def push(obj)
-      synchronize do
-        @ary << obj
-        @ary.size
+  
+    def connect(queue)
+      if @chan[0].nil?
+        @chan[0] = queue
+        1
+      elsif @chan[1].nil?
+        @chan[1] = queue
+        2
+      else
+        false
       end
     end
 
-    def push_and_call(obj)
-      if push(obj) == 1
-        @proc.call
-      end
-    end
-
-    def pop
-      synchronize do
-        return @ary
-      ensure
-        @ary = []
+    def push(data)
+      case data
+      when [176, 6, 1]
+        @chan[0]&.push(:up) rescue @chan[0] = nil
+      when [176, 6, 127]
+        @chan[0]&.push(:down) rescue @chan[0] = nil
+      when [177, 6, 1]
+        @chan[1]&.push(:up) rescue @chan[1] = nil
+      when [177, 6, 127]
+        @chan[1]&.push(:down) rescue @chan[1] = nil
       end
     end
   end
 end
 
+class Queue
+  def pop_all(nonblock=true)
+    result = []
+    begin
+      while true
+        result << pop(nonblock)
+        nonblock = true
+      end
+    rescue ThreadError
+    end
+    result
+  end
+end
+
 if __FILE__ == $0
   dev = MidiM::DJ2GO2Dev.new
-  # dev.output.puts([0x80, 0x33, 127])
-  # MidiM::DJ2GO2WebUI.new.start
-  DRb.start_service
-  txtb = DRbObject.new_with_uri('druby://localhost:8085?controller')
-  w = MidiM::DoubleBuffer.new do
-    txtb.execute_keyboard_macro(w)
-  end
-  dev.reader {|e|
-    case e[0][:data]
-    when [176, 6, 1]
-      w.push_and_call(:up)
-      p :up
-    when [176, 6, 127]
-      w.push_and_call(:down)
-      p :down
-    when [177, 6, 1]
-      p :up
-    when [177, 6, 127]
-      p :down
+  if false
+    MidiM::DJ2GO2WebUI.new.start
+  elsif true
+    DRb.start_service('druby://localhost:8085', MidiM::DJ2GO2Server.new)
+    dev.reader do |e|
+      DRb.front.push(e[:data])
     end
-  }
+  end
   gets
 end
