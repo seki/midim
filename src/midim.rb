@@ -15,12 +15,10 @@ module MidiM
 
     def self.reader(input)
       it = self.new.reader(input)
-      if block_given?
-        loop do
-          yield(it.gets)
-        end
-      end
-      it
+      return it unless block_given?
+      loop do
+        yield(it.gets)
+      end    
     end
 
     def initialize
