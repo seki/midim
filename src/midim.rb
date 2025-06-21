@@ -30,7 +30,9 @@ module MidiM
 
     def reader(input)
       @fiber = Fiber.new do 
-        while data = input.gets
+        while true
+          data = input.gets rescue nil
+          next unless data
           data.each do |datum|
             @timestamp = datum[:timestamp]
             datum[:data].each do |atom|
@@ -81,7 +83,7 @@ module MidiM
     def yield_exclusive
       if @running != 0xf0
         pp [:discard, @buff]
-        reset_running
+        reset_running(@cunning)
         return
       end
 
